@@ -1,0 +1,140 @@
+import pandas as pd
+import numpy as np
+import re
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import PassiveAggressiveClassifier
+from sklearn.metrics import accuracy_score, confusion_matrix
+import nltk
+from nltk.corpus import stopwords
+import warnings
+
+# Suppress warnings for cleaner output
+warnings.filterwarnings('ignore')
+
+# Download NLTK stopwords if not already present
+try:
+    stop_words = set(stopwords.words('english'))
+except LookupError:
+    print("NLTK 'stopwords' not found. Downloading...")
+    nltk.download('stopwords')
+    stop_words = set(stopwords.words('english'))
+
+# Define Dataset URL
+DATASET_URL = 'https://raw.githubusercontent.com/mfj05/Fake-News-Detection/main/news.csv'
+
+# Load Data with Error Handling and Fallback
+print("\n--- Loading Data ---")
+df = None
+try:
+    df = pd.read_csv(DATASET_URL)
+    print("Dataset successfully loaded from URL.")
+    # Data Cleaning specific to this dataset
+    df = df.iloc[:, 1:].sample(frac=1, random_state=42).reset_index(drop=True)
+    df['label'] = df['label'].map({'FAKE': 0, 'REAL': 1})
+    df.dropna(inplace=True)
+except Exception as e:
+    print(f"URL loading failed ({type(e).__name__}: {e}). Using dummy DataFrame for demonstration.")
+    data = {
+        'title': [
+            "Aliens Land: Government Hides Cure",
+            "Stock Market Surges on Tech Earnings",
+            "New Virus Discovered on Moon Rock",
+            "Local Council Approves New Park Construction"
+        ],
+        'text': [
+            "A spaceship landed in the US, and a secret group is suppressing the news about a universal cure.",
+            "Major indices closed higher today following strong quarterly reports from leading technology companies.",
+            "Scientists claim a new strain of bacteria was found on a sample returned from a lunar mission, posing no threat.",
+            "The town's board voted 5-2 to proceed with the planned green space project after a public consultation."
+        ],
+        'label': [0, 1, 0, 1]  # 0 for Fake, 1 for Real
+    }
+    df = pd.DataFrame(data)
+
+# Validate dataset columns
+required_columns = ['title', 'text', 'label']
+if not all(col in df.columns for col in required_columns):
+    raise ValueError(f"Dataset must contain columns: {required_columns}")
+
+print(f"Dataset Loaded. Total Articles: {len(df)}")
+print(f"First 5 rows of the data:\n{df[['title', 'label']].head()}")
+print(f"\nLabel Distribution:\n{df['label'].value_counts()}")
+
+# Data Cleaning and Feature Engineering
+def clean_text(text):
+    """
+    Function to clean and preprocess text.
+    Args:
+        text: Input text to clean.
+    Returns:
+        Cleaned text string with non-alphabetic characters and stopwords removed.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    # Remove non-alphabetic characters
+    text = re.sub(r'[^a-zA-Z\s]', '', text, re.I | re.A)
+    # Convert to lowercase
+    text = text.lower()
+    # Tokenize and remove stopwords
+    tokens = [word for word in text.split() if word not in stop_words]
+    return ' '.join(tokens)
+
+# Combine title and text for classification
+df['full_text'] = df['title'] + ' ' + df['text']
+df['cleaned_text'] = df['full_text'].apply(clean_text)
+
+# Define features (X) and target (y)
+X = df['cleaned_text']
+y = df['label']
+print("\nText Cleaning Complete.")
+
+# Data Splitting & Feature Extraction (TF-IDF)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# TF-IDF Vectorizer (stopwords already handled in clean_text)
+tfidf_vectorizer = TfidfVectorizer(max_df=0.8, min_df=1)
+tfidf_train = tfidf_vectorizer.fit_transform(X_train)
+tfidf_test = tfidf_vectorizer.transform(X_test)
+print(f"\nTF-IDF Matrix Shape (Train): {tfidf_train.shape}")
+
+# Model Training (Passive-Aggressive Classifier)
+pac = PassiveAggressiveClassifier(max_iter=1000, random_state=42)
+pac.fit(tfidf_train, y_train)
+print("\nPassive-Aggressive Classifier Trained.")
+
+# Model Evaluation
+y_pred = pac.predict(tfidf_test)
+accuracy = accuracy_score(y_test, y_pred)
+print(f"\nModel Accuracy on Test Set: {round(accuracy * 100, 4)}%")
+conf_matrix = confusion_matrix(y_test, y_pred, labels=[0, 1])
+print("\nConfusion Matrix (Rows=Actual, Columns=Predicted):")
+print("        Predicted Fake (0) | Predicted Real (1)")
+print(f"Actual Fake (0): {conf_matrix[0]}")
+print(f"Actual Real (1): {conf_matrix[1]}")
+
+# Live Prediction Function
+def predict_news_authenticity(news_title, news_text):
+    """
+    Predicts if a news article is real or fake.
+    Args:
+        news_title (str): Title of the news article.
+        news_text (str): Body text of the news article.
+    Returns:
+        str: Prediction result ("REAL NEWS ✅" or "FAKE NEWS ❌").
+    """
+    article_to_clean = news_title + ' ' + news_text
+    cleaned_article = clean_text(article_to_clean)
+    article_vector = tfidf_vectorizer.transform([cleaned_article])
+    prediction = pac.predict(article_vector)[0]
+    return "REAL NEWS ✅" if prediction == 1 else "FAKE NEWS ❌"
+
+# Example Tests
+print("\n--- Testing on Custom Articles ---")
+fake_title = "Secret Society Controls World's Weather"
+fake_text = "A leaked memo suggests that an elite group meets weekly to decide where and when to trigger major storms."
+print(f"'{fake_title}' -> Prediction: {predict_news_authenticity(fake_title, fake_text)}")
+
+real_title = "Local Firefighters Extinguish Warehouse Blaze"
+real_text = "Emergency services responded quickly to a three-alarm fire late last night at an industrial complex. No injuries reported."
+print(f"'{real_title}' -> Prediction: {predict_news_authenticity(real_title, real_text)}")
